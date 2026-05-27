@@ -1518,7 +1518,7 @@ async function checkAuth() {
     if (data.authenticated) {  
       document.getElementById('auth-screen').classList.add('hidden');  
       await loadAll();  
-    } else if (!data.password_set) {  
+    } else if (data.setup_needed) {  
       document.getElementById('auth-screen').querySelector('.auth-subtitle').textContent = '首次使用，请设置密码';  
       document.getElementById('auth-screen').querySelector('.auth-btn').textContent = '设置密码';  
       document.getElementById('auth-screen').querySelector('.auth-btn').onclick = doSetup;  
