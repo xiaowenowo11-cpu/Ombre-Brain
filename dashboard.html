@@ -2302,14 +2302,33 @@ function addAnniversary() {
 function editAnniversary(id) {
   const item = anniversaries.find(a => a.id === id);
   if (!item) return;
-  const name = prompt('修改纪念日名称', item.name);
-  if (!name || !name.trim()) return;
-  const date = prompt('修改日期，格式：YYYY-MM-DD', item.date);
-  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) { alert('日期格式需要是 YYYY-MM-DD'); return; }
+
+  const name = prompt('修改纪念日名称', item.name || '');
+  if (name === null) return;
+  if (!name.trim()) {
+    alert('纪念日名称不能为空');
+    return;
+  }
+
+  const date = prompt('修改纪念日日期，格式：YYYY-MM-DD，例如 2026-05-20', item.date || '');
+  if (date === null) return;
+
+  const cleanDate = date.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
+    alert('日期格式需要是 YYYY-MM-DD，例如 2026-05-20');
+    return;
+  }
+
   item.name = name.trim();
-  item.date = date.trim();
+  item.date = cleanDate;
+
   saveAnniversaries();
   renderAnniversaries();
+
+  if (typeof renderCalendar === 'function') {
+    renderCalendar();
+  }
+}
 }
 
 function removeAnniversary(id) {
