@@ -925,9 +925,10 @@ body {
 }  
   
 .filter-chip.active {  
-  background: var(--primary);  
-  color: white;  
-  border-color: var(--primary);  
+  background: rgba(120, 189, 242, 0.16);  
+  color: var(--primary-dark);  
+  border-color: rgba(120, 189, 242, 0.55);  
+  box-shadow: 0 4px 14px rgba(120, 189, 242, 0.12);
 }  
   
 /* ========== Stat Banner ========== */  
@@ -2020,8 +2021,29 @@ function formatDate(dateStr) {
   return d.getFullYear() + '/' + (d.getMonth()+1) + '/' + d.getDate();  
 }  
   
+function getImportanceValue(item) {
+  if (!item) return 0;
+
+  const raw =
+    item.importance ??
+    item.score ??
+    item.weight ??
+    item.strength ??
+    item.priority ??
+    0;
+
+  const num = Number(raw);
+
+  if (!Number.isFinite(num)) return 0;
+
+  // 如果后端给的是 0-100，就压缩成 0-10
+  if (num > 10) return Math.max(0, Math.min(10, Math.round(num / 10)));
+
+  return Math.max(0, Math.min(10, Math.round(num)));
+}
+
 function renderImportance(value) {  
-  const score = Math.max(0, Math.min(10, parseInt(value || 0, 10)));  
+  const score = Math.max(0, Math.min(10, Number(value || 0)));  
   let bars = '';  
   for (let i = 1; i <= 10; i++) {  
     const h = 4 + i;  
@@ -2045,7 +2067,7 @@ function renderBucketCard(b) {
       <div class="card-footer">  
         <div class="card-meta">  
           <span>${formatDate(b.created)}</span>  
-          <span>重要度 ${renderImportance(b.importance)}</span>  
+          <span>重要度 ${renderImportance(getImportanceValue(b))}</span>  
           ${b.domain && b.domain.length ? '<span>' + b.domain.join(', ') + '</span>' : ''}  
         </div>  
       </div>  
@@ -2492,8 +2514,18 @@ async function openDetail(bucketId) {
     // Meta badges  
     let metaHtml = '';  
     if (data.pinned) metaHtml += '<span class="card-badge badge-pinned">钉选</span>';  
-    metaHtml += `<span class="card-badge badge-${data.type}">${data.type}</span>`;  
-    metaHtml += `<span class="tag">重要度 ${renderImportance(data.importance)}</span>`;  
+
+const detailTypeLabel =
+  data.type === 'permanent' ? '固化' :
+  data.type === 'feel' ? '感受' :
+  data.type === 'dynamic' ? '动态' :
+  data.type ? data.type : '';
+
+if (detailTypeLabel) {
+  metaHtml += `<span class="card-badge badge-${data.type || 'dynamic'}">${detailTypeLabel}</span>`;
+}
+
+metaHtml += `<span class="tag">重要度 ${renderImportance(getImportanceValue(data))}</span>`;   
     if (data.domain) data.domain.forEach(d => { metaHtml += `<span class="tag">${d}</span>`; });  
     if (data.created) metaHtml += `<span class="tag">${formatDate(data.created)}</span>`;  
     document.getElementById('detail-meta').innerHTML = metaHtml;  
