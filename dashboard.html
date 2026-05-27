@@ -4,22 +4,22 @@
 <meta charset="UTF-8">  
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">  
 <title>Ombre Brain</title>  
-<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">  
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;600;700&family=Playfair+Display:wght@400;500;600&display=swap" rel="stylesheet">  
 <style>  
 /* ========== CSS Variables ========== */  
 :root {  
-  --primary: #3B8CDE;  
-  --primary-dark: #2B6CB0;  
-  --primary-light: #E8F2FC;  
-  --primary-soft: #F0F7FF;  
-  --bg: #F5F9FF;  
+  --primary: #78BDF2;  
+  --primary-dark: #4F9FDC;  
+  --primary-light: #EEF8FF;  
+  --primary-soft: #F7FCFF;  
+  --bg: #F7FBFF;  
   --surface: #FFFFFF;  
-  --surface-hover: #FAFCFF;  
-  --text: #1C2B3A;  
-  --text-secondary: #6B8299;  
-  --text-hint: #9DB2C8;  
-  --border: #E2EBF3;  
-  --border-light: #EDF2F7;  
+  --surface-hover: #FBFDFF;  
+  --text: #203A52;  
+  --text-secondary: #7893AA;  
+  --text-hint: #A9C1D6;  
+  --border: #E1EEF8;  
+  --border-light: #EEF6FC;  
   --shadow-sm: 0 1px 3px rgba(59,140,222,0.06);  
   --shadow-md: 0 4px 16px rgba(59,140,222,0.08);  
   --shadow-lg: 0 8px 32px rgba(59,140,222,0.12);  
@@ -28,16 +28,16 @@
   --radius-md: 16px;  
   --radius-lg: 24px;  
   --radius-xl: 32px;  
-  --positive: #3DA67A;  
-  --negative: #D4574E;  
-  --warning: #E5A83E;  
-  --pinned: #F0C246;  
-  --feel: #C78DB6;  
+  --positive: #78BDF2;  
+  --negative: #4F9FDC;  
+  --warning: #A8D7F8;  
+  --pinned: #78BDF2;  
+  --feel: #78BDF2;  
   --nav-height: 72px;  
   --header-height: 56px;  
   --safe-bottom: env(safe-area-inset-bottom, 0px);  
-  --font-display: 'Playfair Display', Georgia, serif;  
-  --font-body: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;  
+  --font-display: 'Noto Serif SC', 'Playfair Display', Georgia, serif;  
+  --font-body: 'Noto Sans SC', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;  
 }  
   
 /* ========== Reset & Base ========== */  
@@ -282,10 +282,10 @@ body {
   margin-left: 8px;  
 }  
   
-.badge-pinned { background: #FFF8E1; color: #C49000; }  
-.badge-permanent { background: #E8F5E9; color: #2E7D32; }  
-.badge-dynamic { background: var(--primary-light); color: var(--primary); }  
-.badge-feel { background: #FCE4EC; color: #C2185B; }  
+.badge-pinned { background: var(--primary-light); color: var(--primary-dark); }  
+.badge-permanent { background: var(--primary-light); color: var(--primary-dark); }  
+.badge-dynamic { background: var(--primary-light); color: var(--primary-dark); }  
+.badge-feel { background: var(--primary-light); color: var(--primary-dark); }  
   
 .card-preview {  
   font-size: 13px;  
@@ -389,7 +389,7 @@ body {
   
 .fab.hidden { display: none; }  
   
-/* ========== Write Modal (Bottom Sheet) ========== */  
+/* ========== Write Page ========== */  
 .modal-overlay {  
   position: fixed;  
   inset: 0;  
@@ -538,7 +538,7 @@ body {
   cursor: not-allowed;  
 }  
   
-/* ========== Detail View (Bottom Sheet) ========== */  
+/* ========== Detail Page ========== */  
 .detail-sheet {  
   position: fixed;  
   bottom: 0;  
@@ -932,64 +932,208 @@ body {
   
 /* ========== Stat Banner ========== */  
 .stat-banner {  
-  background: linear-gradient(135deg, var(--primary), #5CA0E6);  
+  background: linear-gradient(135deg, rgba(238,248,255,0.98), rgba(247,252,255,0.98));  
+  border: 1px solid rgba(120,189,242,0.18);  
   border-radius: var(--radius-md);  
-  padding: 20px;  
-  margin-bottom: 16px;  
-  color: white;  
+  padding: 12px 14px;  
+  margin-bottom: 12px;  
+  color: var(--text);  
   position: relative;  
   overflow: hidden;  
+  box-shadow: var(--shadow-sm);  
 }  
   
-.stat-banner::before {  
-  content: '';  
-  position: absolute;  
-  top: -30px;  
-  right: -30px;  
-  width: 120px;  
-  height: 120px;  
-  background: rgba(255,255,255,0.1);  
-  border-radius: 50%;  
-}  
-  
-.stat-banner::after {  
-  content: '';  
-  position: absolute;  
-  bottom: -40px;  
-  left: 20px;  
-  width: 80px;  
-  height: 80px;  
-  background: rgba(255,255,255,0.06);  
-  border-radius: 50%;  
-}  
+.stat-banner::before, .stat-banner::after { display: none; }  
   
 .stat-banner-title {  
   font-family: var(--font-display);  
-  font-size: 15px;  
-  font-weight: 400;  
-  opacity: 0.9;  
-  margin-bottom: 8px;  
+  font-size: 14px;  
+  font-weight: 500;  
+  color: var(--primary-dark);  
+  margin-bottom: 6px;  
 }  
   
 .stat-banner-grid {  
   display: grid;  
   grid-template-columns: repeat(3, 1fr);  
-  gap: 12px;  
+  gap: 8px;  
   position: relative;  
   z-index: 1;  
 }  
   
 .stat-item-value {  
-  font-size: 24px;  
+  font-size: 20px;  
   font-weight: 700;  
+  color: var(--primary-dark);  
 }  
   
 .stat-item-label {  
-  font-size: 11px;  
-  opacity: 0.75;  
-  font-weight: 400;  
+  font-size: 10px;  
+  color: var(--text-hint);  
+  font-weight: 500;  
 }  
   
+
+
+/* ========== Signal Importance ========== */
+.signal-bars {
+  display: inline-flex;
+  align-items: end;
+  gap: 2px;
+  height: 16px;
+  vertical-align: middle;
+}
+.signal-bar {
+  width: 3px;
+  border-radius: 4px;
+  background: var(--border);
+  opacity: 0.9;
+}
+.signal-bar.filled { background: var(--primary); }
+.signal-score {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--primary-dark);
+  font-weight: 600;
+}
+.importance-wrap {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+/* ========== Full Page Write & Detail ========== */
+.modal-overlay { display: none !important; }
+.modal-sheet,
+.detail-sheet {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 100dvh;
+  max-height: none;
+  border-radius: 0;
+  background: var(--bg);
+  transform: translateX(100%);
+  box-shadow: none;
+}
+.modal-sheet.open,
+.detail-sheet.open {
+  transform: translateX(0);
+}
+.modal-handle { display: none; }
+.modal-header {
+  min-height: var(--header-height);
+  background: rgba(255,255,255,0.86);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+}
+.modal-title {
+  font-size: 20px;
+  color: var(--text);
+}
+.modal-body,
+.detail-content {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+}
+.detail-meta-bar {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding-top: 16px;
+}
+.detail-content {
+  background: var(--surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  margin-top: 6px;
+  margin-bottom: 28px;
+  font-size: 13px;
+  line-height: 1.95;
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-card);
+}
+.detail-page-title {
+  font-family: var(--font-display);
+  font-size: 27px;
+  line-height: 1.35;
+  font-weight: 600;
+  color: var(--text);
+  padding: 18px 20px 6px;
+  max-width: 720px;
+  margin: 0 auto;
+}
+.detail-page-subtitle {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 20px 6px;
+  color: var(--text-hint);
+  font-size: 12px;
+}
+
+/* ========== Appearance Controls ========== */
+.appearance-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 12px 18px 16px;
+}
+.mini-choice {
+  border: 1.5px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  border-radius: 14px;
+  padding: 10px 8px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mini-choice.active {
+  border-color: var(--primary);
+  color: var(--primary-dark);
+  background: var(--primary-soft);
+}
+body.theme-ice {
+  --primary: #86C8F4;
+  --primary-dark: #5AA7DE;
+  --primary-light: #F0F9FF;
+  --bg: #F8FCFF;
+}
+body.theme-sky {
+  --primary: #78BDF2;
+  --primary-dark: #4F9FDC;
+  --primary-light: #EEF8FF;
+  --bg: #F7FBFF;
+}
+body.theme-deep {
+  --primary: #62AEE8;
+  --primary-dark: #3E8FCE;
+  --primary-light: #EAF6FF;
+  --bg: #F4FAFF;
+}
+body.frosted .card,
+body.frosted .settings-group,
+body.frosted .calendar-container,
+body.frosted .stat-banner,
+body.frosted .modal-header,
+body.frosted .bottom-nav,
+body.frosted .header {
+  background: rgba(255,255,255,0.68);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+body.image-bg {
+  background-image: linear-gradient(rgba(247,251,255,0.82), rgba(247,251,255,0.82)), var(--custom-bg-image, linear-gradient(135deg, #EEF8FF, #FFFFFF));
+  background-size: cover;
+  background-position: center;
+}
+body.image-bg #app {
+  background: rgba(247,251,255,0.45);
+}
+
 /* ========== Responsive (Desktop) ========== */  
 @media (min-width: 768px) {  
   .bottom-nav {  
@@ -1225,7 +1369,7 @@ body {
       </div>  
       <div class="filter-bar" id="memory-filters">  
         <div class="filter-chip active" data-filter="all" onclick="setFilter(this,'memory')">全部</div>  
-        <div class="filter-chip" data-filter="pinned" onclick="setFilter(this,'memory')">📌 钉选</div>  
+        <div class="filter-chip" data-filter="pinned" onclick="setFilter(this,'memory')">钉选</div>  
         <div class="filter-chip" data-filter="permanent" onclick="setFilter(this,'memory')">固化</div>  
         <div class="filter-chip" data-filter="dynamic" onclick="setFilter(this,'memory')">动态</div>  
         <div class="filter-chip" data-filter="feel" onclick="setFilter(this,'memory')">感受</div>  
@@ -1304,11 +1448,44 @@ body {
       </div>  
   
       <div class="settings-group">  
+        <div class="settings-group-title">外观</div>  
+        <div class="appearance-grid">  
+          <button class="mini-choice active" data-theme="sky" onclick="setTheme('sky', this)">浅天蓝</button>  
+          <button class="mini-choice" data-theme="ice" onclick="setTheme('ice', this)">冰蓝白</button>  
+          <button class="mini-choice" data-theme="deep" onclick="setTheme('deep', this)">雾蓝</button>  
+        </div>  
+        <div class="settings-item" onclick="toggleFrosted(this)">  
+          <div class="settings-item-left">  
+            <div class="settings-icon" style="background:var(--primary-light)">  
+              <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>  
+            </div>  
+            <div>  
+              <div class="settings-item-label">磨砂质感</div>  
+              <div class="settings-item-desc">让卡片和导航变成轻雾玻璃效果</div>  
+            </div>  
+          </div>  
+          <div class="toggle" id="toggle-frosted"></div>  
+        </div>  
+        <div class="settings-item" onclick="setImageBackground()">  
+          <div class="settings-item-left">  
+            <div class="settings-icon" style="background:var(--primary-light)">  
+              <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M8 13l2.5-2.5L15 15l2-2 3 3"/></svg>  
+            </div>  
+            <div>  
+              <div class="settings-item-label">图片背景</div>  
+              <div class="settings-item-desc">填入图片地址，页面会覆盖浅蓝白雾层</div>  
+            </div>  
+          </div>  
+          <div class="settings-item-value">设置</div>  
+        </div>  
+      </div>  
+  
+      <div class="settings-group">  
         <div class="settings-group-title">记忆引擎</div>  
         <div class="settings-item" onclick="toggleSetting(this, 'decay')">  
           <div class="settings-item-left">  
-            <div class="settings-icon" style="background:#EBF5FF">  
-              <svg viewBox="0 0 24 24" fill="none" stroke="#3B8CDE" stroke-width="1.8"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>  
+            <div class="settings-icon" style="background:var(--primary-light)">  
+              <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="1.8"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>  
             </div>  
             <div>  
               <div class="settings-item-label">衰减引擎</div>  
@@ -1319,8 +1496,8 @@ body {
         </div>  
         <div class="settings-item">  
           <div class="settings-item-left">  
-            <div class="settings-icon" style="background:#F0F0FF">  
-              <svg viewBox="0 0 24 24" fill="none" stroke="#6366F1" stroke-width="1.8"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>  
+            <div class="settings-icon" style="background:var(--primary-light)">  
+              <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="1.8"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>  
             </div>  
             <div>  
               <div class="settings-item-label">Embedding 引擎</div>  
@@ -1335,8 +1512,8 @@ body {
         <div class="settings-group-title">存储</div>  
         <div class="settings-item">  
           <div class="settings-item-left">  
-            <div class="settings-icon" style="background:#FFF4E5">  
-              <svg viewBox="0 0 24 24" fill="none" stroke="#E5A83E" stroke-width="1.8"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>  
+            <div class="settings-icon" style="background:var(--primary-light)">  
+              <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="1.8"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>  
             </div>  
             <div>  
               <div class="settings-item-label">存储空间</div>  
@@ -1347,8 +1524,8 @@ body {
         </div>  
         <div class="settings-item">  
           <div class="settings-item-left">  
-            <div class="settings-icon" style="background:#E8F5E9">  
-              <svg viewBox="0 0 24 24" fill="none" stroke="#3DA67A" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>  
+            <div class="settings-icon" style="background:var(--primary-light)">  
+              <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>  
             </div>  
             <div>  
               <div class="settings-item-label">密码保护</div>  
@@ -1366,8 +1543,8 @@ body {
         <div class="settings-group-title">高级</div>  
         <div class="settings-item" onclick="openBreathDebug()">  
           <div class="settings-item-left">  
-            <div class="settings-icon" style="background:#FCE4EC">  
-              <svg viewBox="0 0 24 24" fill="none" stroke="#C2185B" stroke-width="1.8"><path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/></svg>  
+            <div class="settings-icon" style="background:var(--primary-light)">  
+              <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="1.8"><path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/></svg>  
             </div>  
             <div>  
               <div class="settings-item-label">Breath 调试</div>  
@@ -1380,8 +1557,8 @@ body {
         </div>  
         <div class="settings-item" onclick="openImport()">  
           <div class="settings-item-left">  
-            <div class="settings-icon" style="background:#E8F2FC">  
-              <svg viewBox="0 0 24 24" fill="none" stroke="#3B8CDE" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>  
+            <div class="settings-icon" style="background:var(--primary-light)">  
+              <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>  
             </div>  
             <div>  
               <div class="settings-item-label">导入记忆</div>  
@@ -1394,8 +1571,8 @@ body {
         </div>  
         <div class="settings-item">  
           <div class="settings-item-left">  
-            <div class="settings-icon" style="background:#F5F5F5">  
-              <svg viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>  
+            <div class="settings-icon" style="background:var(--primary-light)">  
+              <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>  
             </div>  
             <div>  
               <div class="settings-item-label">关于</div>  
@@ -1415,7 +1592,7 @@ body {
     <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>  
   </button>  
   
-  <!-- ===== Write Modal ===== -->  
+  <!-- ===== Write Page ===== -->  
   <div class="modal-overlay" id="write-overlay" onclick="closeWriteModal()"></div>  
   <div class="modal-sheet" id="write-sheet">  
     <div class="modal-handle"></div>  
@@ -1429,7 +1606,7 @@ body {
       <label>类型</label>  
       <select id="write-type">  
         <option value="memory">记忆（窗口总结）</option>  
-        <option value="diary">日记 / 随笔</option>  
+        <option value="diary">日记</option>  
         <option value="mood">心情</option>  
       </select>  
       <label>标题</label>  
@@ -1453,16 +1630,18 @@ body {
     </div>  
   </div>  
   
-  <!-- ===== Detail Sheet ===== -->  
+  <!-- ===== Detail Page ===== -->  
   <div class="modal-overlay" id="detail-overlay" onclick="closeDetail()"></div>  
   <div class="detail-sheet" id="detail-sheet">  
     <div class="modal-handle"></div>  
     <div class="modal-header">  
-      <div class="modal-title" id="detail-title">记忆详情</div>  
+      <div class="modal-title">记忆详情</div>  
       <button class="modal-close" onclick="closeDetail()">  
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>  
       </button>  
     </div>  
+    <div class="detail-page-title" id="detail-title">记忆详情</div>  
+    <div class="detail-page-subtitle" id="detail-subtitle"></div>  
     <div class="detail-meta-bar" id="detail-meta"></div>  
     <div class="detail-content" id="detail-content">加载中…</div>  
   </div>  
@@ -1505,8 +1684,8 @@ const API = window.location.origin;
   
 // ========== Anniversaries Config ==========  
 const ANNIVERSARIES = [  
-  { name: '在一起', date: '2026-05-20', emoji: '🧡' },  
-  { name: '记忆库上线', date: '2026-05-21', emoji: '🧠' },  
+  { name: '在一起', date: '2026-05-20' },  
+  { name: '记忆库上线', date: '2026-05-21' },  
   // 可在此添加更多纪念日  
 ];  
   
@@ -1636,9 +1815,19 @@ function formatDate(dateStr) {
   return d.getFullYear() + '/' + (d.getMonth()+1) + '/' + d.getDate();  
 }  
   
+function renderImportance(value) {  
+  const score = Math.max(0, Math.min(10, parseInt(value || 0, 10)));  
+  let bars = '';  
+  for (let i = 1; i <= 10; i++) {  
+    const h = 4 + i;  
+    bars += `<span class="signal-bar ${i <= score ? 'filled' : ''}" style="height:${h}px"></span>`;  
+  }  
+  return `<span class="importance-wrap"><span class="signal-bars">${bars}</span><span class="signal-score">${score}/10</span></span>`;  
+}  
+
 function renderBucketCard(b) {  
   const typeClass = b.pinned ? 'badge-pinned' : ('badge-' + b.type);  
-  const typeLabel = b.pinned ? '📌 钉选' : (b.type === 'permanent' ? '固化' : b.type === 'feel' ? '感受' : '动态');  
+  const typeLabel = b.pinned ? '钉选' : (b.type === 'permanent' ? '固化' : b.type === 'feel' ? '感受' : '动态');  
   const tags = (b.tags || []).slice(0, 4).map(t => `<span class="tag">${t}</span>`).join('');  
   return `  
     <div class="card" onclick="openDetail('${b.id}')">  
@@ -1651,7 +1840,7 @@ function renderBucketCard(b) {
       <div class="card-footer">  
         <div class="card-meta">  
           <span>${formatDate(b.created)}</span>  
-          <span>重要度 ${b.importance}</span>  
+          <span>重要度 ${renderImportance(b.importance)}</span>  
           ${b.domain && b.domain.length ? '<span>' + b.domain.join(', ') + '</span>' : ''}  
         </div>  
       </div>  
@@ -1774,7 +1963,7 @@ function renderAnniversaries() {
     const daysSince = Math.floor((now - start) / 86400000);  
     html += `  
       <div class="anniversary-card">  
-        <div class="anniversary-label">${a.emoji} 纪念日</div>  
+        <div class="anniversary-label">纪念日</div>  
         <div class="anniversary-title">${a.name}</div>  
         <div class="anniversary-days">已经 <strong>${daysSince}</strong> 天</div>  
       </div>  
@@ -1843,6 +2032,7 @@ function openWriteModal() {
   const select = document.getElementById('write-type');  
   if (currentTab in typeMap) select.value = typeMap[currentTab];  
   
+  document.getElementById('write-modal-title').textContent = select.value === 'diary' ? '写日记' : (select.value === 'mood' ? '写心情' : '写入记忆');  
   document.getElementById('write-overlay').classList.add('open');  
   document.getElementById('write-sheet').classList.add('open');  
 }  
@@ -1914,12 +2104,13 @@ async function openDetail(bucketId) {
   try {  
     const data = await apiFetch('/api/bucket/' + bucketId);  
     document.getElementById('detail-title').textContent = data.name || data.id;  
+    document.getElementById('detail-subtitle').textContent = data.created ? formatDate(data.created) : '';  
   
     // Meta badges  
     let metaHtml = '';  
-    if (data.pinned) metaHtml += '<span class="card-badge badge-pinned">📌 钉选</span>';  
+    if (data.pinned) metaHtml += '<span class="card-badge badge-pinned">钉选</span>';  
     metaHtml += `<span class="card-badge badge-${data.type}">${data.type}</span>`;  
-    metaHtml += `<span class="tag">重要度 ${data.importance}</span>`;  
+    metaHtml += `<span class="tag">重要度 ${renderImportance(data.importance)}</span>`;  
     if (data.domain) data.domain.forEach(d => { metaHtml += `<span class="tag">${d}</span>`; });  
     if (data.created) metaHtml += `<span class="tag">${formatDate(data.created)}</span>`;  
     document.getElementById('detail-meta').innerHTML = metaHtml;  
@@ -1935,6 +2126,54 @@ function closeDetail() {
   document.getElementById('detail-sheet').classList.remove('open');  
 }  
   
+
+// ========== Appearance Actions ==========  
+function setTheme(theme, el) {  
+  document.body.classList.remove('theme-ice', 'theme-sky', 'theme-deep');  
+  document.body.classList.add('theme-' + theme);  
+  document.querySelectorAll('.mini-choice[data-theme]').forEach(btn => btn.classList.remove('active'));  
+  if (el) el.classList.add('active');  
+  localStorage.setItem('ombre-theme', theme);  
+}  
+  
+function toggleFrosted(el) {  
+  const toggle = document.getElementById('toggle-frosted');  
+  const on = !document.body.classList.contains('frosted');  
+  document.body.classList.toggle('frosted', on);  
+  toggle.classList.toggle('on', on);  
+  localStorage.setItem('ombre-frosted', on ? '1' : '0');  
+}  
+  
+function setImageBackground() {  
+  const current = localStorage.getItem('ombre-bg-image') || '';  
+  const url = prompt('粘贴图片地址；留空并确认可清除背景', current);  
+  if (url === null) return;  
+  if (url.trim()) {  
+    document.body.style.setProperty('--custom-bg-image', `url("${url.trim()}")`);  
+    document.body.classList.add('image-bg');  
+    localStorage.setItem('ombre-bg-image', url.trim());  
+  } else {  
+    document.body.style.removeProperty('--custom-bg-image');  
+    document.body.classList.remove('image-bg');  
+    localStorage.removeItem('ombre-bg-image');  
+  }  
+}  
+  
+function restoreAppearance() {  
+  const theme = localStorage.getItem('ombre-theme') || 'sky';  
+  const themeBtn = document.querySelector(`.mini-choice[data-theme="${theme}"]`);  
+  setTheme(theme, themeBtn);  
+  const frosted = localStorage.getItem('ombre-frosted') === '1';  
+  document.body.classList.toggle('frosted', frosted);  
+  const frostedToggle = document.getElementById('toggle-frosted');  
+  if (frostedToggle) frostedToggle.classList.toggle('on', frosted);  
+  const bg = localStorage.getItem('ombre-bg-image');  
+  if (bg) {  
+    document.body.style.setProperty('--custom-bg-image', `url("${bg}")`);  
+    document.body.classList.add('image-bg');  
+  }  
+}  
+
 // ========== Settings Actions ==========  
 function toggleSetting(el, key) {  
   const toggle = el.querySelector('.toggle');  
@@ -1959,7 +2198,7 @@ function escHtml(s) {
 }  
   
 // ========== Init ==========  
-document.addEventListener('DOMContentLoaded', checkAuth);  
+document.addEventListener('DOMContentLoaded', () => { restoreAppearance(); checkAuth(); });  
   
 // Handle enter key on auth  
 document.getElementById('auth-password').addEventListener('keydown', (e) => {  
