@@ -1483,14 +1483,6 @@ async def dashboard(request):
     except FileNotFoundError:
         return HTMLResponse("<h1>dashboard.html not found</h1>", status_code=404)
 
-@mcp.custom_route("/favicon.png", methods=["GET"])
-async def favicon_png(request):
-    from starlette.responses import FileResponse
-    import os
-
-    favicon_path = os.path.join(os.path.dirname(__file__), "favicon.png")
-    return FileResponse(favicon_path, media_type="image/png")
-
 
 @mcp.custom_route("/api/config", methods=["GET"])
 async def api_config_get(request):
