@@ -222,10 +222,33 @@ def bm_config(tmp_path):
     }
 
 
+class _FakeEmbeddingEngine:
+    """最小化可用替身：embedding 现在是 create()/update(content=...) 的
+    强制依赖，这里的测试不验证 embedding 本身，给一个永远成功的假引擎。
+    （与 conftest.FakeEmbeddingEngine 同构但不跨文件 import——pytest 在
+    tests/ 是 package 的布局下，`from conftest import ...` 容易因为
+    sys.path 解析顺序在某些调用方式下找不到模块，保留各文件本地定义更稳妥。）
+    """
+
+    enabled = True
+
+    async def generate_and_store(self, bucket_id, content):
+        return True
+
+    def delete_embedding(self, bucket_id):
+        pass
+
+    async def get_embedding(self, bucket_id):
+        return [0.1, 0.2, 0.3]
+
+    async def search_similar(self, query, top_k=10):
+        return []
+
+
 @pytest.fixture
 def bucket_mgr(bm_config):
     from bucket_manager import BucketManager
-    return BucketManager(bm_config)
+    return BucketManager(bm_config, embedding_engine=_FakeEmbeddingEngine())
 
 
 class TestBucketManagerCreate:
@@ -272,6 +295,55 @@ class TestBucketManagerCreate:
         bid = await bucket_mgr.create(content="重要内容", importance=3, pinned=True)
         result = await bucket_mgr.get(bid)
         assert result["metadata"]["importance"] == 10
+
+    @pytest.mark.asyncio
+    async def test_unpin_demotes_permanent_to_dynamic(self, bucket_mgr, decay_eng):
+        # 钉选 → update(pinned=True) 自动把桶搬进 permanent/，权重恒 999
+        bid = await bucket_mgr.create(content="一条核心准则")
+        await bucket_mgr.update(bid, pinned=True)
+        pinned = await bucket_mgr.get(bid)
+        assert pinned["metadata"]["type"] == "permanent"
+        assert decay_eng.calculate_score(pinned["metadata"]) == 999.0
+
+        # 取消钉选 → 必须降级回 dynamic，权重不再卡 999
+        ok = await bucket_mgr.update(bid, pinned=False)
+        assert ok
+        unpinned = await bucket_mgr.get(bid)
+        assert unpinned["metadata"].get("pinned") is False
+        assert unpinned["metadata"]["type"] == "dynamic"
+        assert decay_eng.calculate_score(unpinned["metadata"]) != 999.0
+
+        # 固化配额应实时释放（不再被这条占用）
+        from tools._common import count_pinned
+        import tools._runtime as rt
+        rt.bucket_mgr = bucket_mgr
+        assert await count_pinned() == 0
+
+    @pytest.mark.asyncio
+    async def test_decay_cycle_preserves_unpinned_permanent(self, bucket_mgr, decay_eng):
+        """type=permanent is a first-class bucket type, even without pinned=True."""
+        import frontmatter as fm
+
+        bid = await bucket_mgr.create(content="一条曾被钉选的准则")
+        await bucket_mgr.update(bid, pinned=True)
+        # Simulate stored permanent content that has no pinned flag.
+        fpath = bucket_mgr._find_bucket_file(bid)
+        post = fm.load(fpath)
+        post["pinned"] = False
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write(fm.dumps(post))
+
+        orphan = await bucket_mgr.get(bid)
+        assert orphan["metadata"]["type"] == "permanent"
+        assert decay_eng.calculate_score(orphan["metadata"]) == 999.0
+
+        stats = await decay_eng.run_decay_cycle()
+
+        healed = await bucket_mgr.get(bid)
+        assert stats["demoted_orphans"] == 0
+        assert healed["metadata"]["type"] == "permanent"
+        assert healed["metadata"].get("pinned") is False
+        assert decay_eng.calculate_score(healed["metadata"]) == 999.0
 
     @pytest.mark.asyncio
     async def test_importance_clamped_below_1(self, bucket_mgr):
@@ -581,7 +653,7 @@ def decay_config(tmp_path):
 def decay_engine(decay_config):
     from bucket_manager import BucketManager
     from decay_engine import DecayEngine
-    bm = BucketManager(decay_config)
+    bm = BucketManager(decay_config, embedding_engine=_FakeEmbeddingEngine())
     return DecayEngine(decay_config, bm)
 
 
@@ -1058,3 +1130,22 @@ class TestBucketManagerArchive:
     async def test_archive_nonexistent_returns_false(self, bucket_mgr):
         result = await bucket_mgr.archive("no_such_bucket_xyz")
         assert result is False
+
+
+# ===========================================================
+# 10. EmbeddingEngine — model-name 归一化（OB-W005 假阳性）
+# ===========================================================
+
+class TestEmbeddingModelNorm:
+    def test_prefix_equivalent_to_bare(self):
+        from embedding_engine import _norm_model
+        # Gemini 端点的 models/ 前缀 vs OpenAI 兼容代理的裸名 → 同一模型
+        assert _norm_model("models/gemini-embedding-001") == _norm_model("gemini-embedding-001")
+
+    def test_case_and_whitespace_insensitive(self):
+        from embedding_engine import _norm_model
+        assert _norm_model("  models/Gemini-Embedding-001 ") == _norm_model("gemini-embedding-001")
+
+    def test_different_models_stay_distinct(self):
+        from embedding_engine import _norm_model
+        assert _norm_model("bge-m3") != _norm_model("gemini-embedding-001")

@@ -32,7 +32,7 @@ import math
 import logging
 import shutil
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 # 统一错误体系：越界 clamp 时上报 OB-W001/OB-W002（rule.md §11）
 try:
@@ -80,6 +80,12 @@ import frontmatter
 from rapidfuzz import fuzz
 
 from utils import generate_bucket_id, sanitize_name, safe_path, now_iso
+from bucket_scoring import (
+    calc_topic_score,
+    calc_emotion_score,
+    calc_time_score,
+    calc_touch_score,
+)
 
 try:
     from bm25_index import BM25Index as _BM25Index
@@ -117,22 +123,10 @@ _RIPPLE_BOOST = 0.3        # 唤醒时 activation_count 增量
 # --- search 评分 ---
 _VECTOR_TOPK = 50          # embedding 预取 top_k（仅作 semantic 分源，不窄化候选集）
 _RESOLVED_RANK_PENALTY = 0.3   # resolved 桶仅在排序时降权
+_LITERAL_MATCH_BONUS = 25.0    # 查询串原样命中 name/tags/domain/正文时的召回加分（修短查询召回）
 
-# --- _calc_topic_score 文本维度权重 ---
-_TOPIC_NAME_W = 3.0
-_TOPIC_DOMAIN_W = 2.5
-_TOPIC_TAG_W = 2.0
-_TOPIC_BODY_SLICE = 1000   # body 文本参与 fuzzy 的首部截断长度
-
-# --- _calc_emotion_score ---
-_EMOTION_MAX_DIST = math.sqrt(2)  # Russell 理论最大欧氏距离
-
-# --- _calc_time_score ---
-_TIME_DECAY_LAMBDA = 0.02  # e^(-λ*days)，越小 → 起冷起慢
-_TIME_FALLBACK_DAYS = 30   # 无可解析 last_active 时的默认天数
-
-# --- _calc_touch_score ---
-_TOUCH_NORMALIZE_CAP = 10.0   # activation_count / 该值，裁到 1.0
+# topic/emotion/time/touch 四个评分维度的纯函数 + 权重常量已拆到
+# bucket_scoring.py（search() 和 _calc_*_score 兼容 wrapper 都从那边导入）。
 
 
 def _clamp01(value, default: float) -> float:
@@ -159,10 +153,11 @@ class BucketManager:
     天然兼容 Obsidian 直接浏览和编辑。
     """
 
-    def __init__(self, config: dict, embedding_engine=None):
+    def __init__(self, config: dict, embedding_engine=None, v3_runtime=None):
         # iter 1.9 G: 保留原始 config 引用，让 create() 能读 bucket_type_defaults
         # Keep raw config so create() can look up bucket_type_defaults at write time.
         self.config = config
+        self.v3_runtime = v3_runtime
         # --- Read storage paths from config / 从配置中读取存储路径 ---
         self.base_dir = config["buckets_dir"]
         self.permanent_dir = os.path.join(self.base_dir, "permanent")
@@ -216,6 +211,32 @@ class BucketManager:
         self._bm25: "_BM25Index | None" = _BM25Index() if _BM25Index is not None else None
         self._bm25_dirty: bool = True
 
+    def attach_v3_runtime(self, runtime) -> None:
+        self.v3_runtime = runtime
+
+    def _record_v3_bucket_event(
+        self,
+        action: str,
+        bucket_id: str,
+        bucket_type: str,
+        content: str,
+        metadata: dict | None,
+    ) -> None:
+        runtime = getattr(self, "v3_runtime", None)
+        recorder = getattr(runtime, "record_bucket_event", None)
+        if not callable(recorder):
+            return
+        try:
+            recorder(
+                action=action,
+                bucket_id=bucket_id,
+                bucket_type=bucket_type,
+                content=content,
+                metadata=metadata or {},
+            )
+        except Exception as exc:
+            logger.warning(f"v3 bucket event record failed for {action}:{bucket_id}: {exc}")
+
     # ---------------------------------------------------------
     # Internal helpers【代码多复用、不作为公共 API】
     # 内部工具：目录遍历 / 主域路径 / 装入与开销完全一致于原原本
@@ -253,17 +274,30 @@ class BucketManager:
     # Internal: keep embedding index in sync with markdown storage
     # 内部：保证向量索引与 markdown 存储层一致
     # ---------------------------------------------------------
-    async def _sync_embedding(self, bucket_id: str, content: str) -> None:
-        """create()/update(content=...) 调用，best-effort 写入向量。
-        embedding_engine 未配置或 disabled 时跳过；失败仅 warning，按 rule.md §1.5 允许降级。"""
+    def _require_embedding_available(self) -> None:
+        """create()/update(content=...) 落盘前的硬性前置校验。
+
+        embedding 是记忆系统的强制依赖，不再允许「文件已存在但向量缺失」的
+        降级状态：未配置 / 未启用直接拒绝整个写操作，调用方（hold/grow/trace）
+        据此向 MCP 客户端和 Dashboard 报错，不静默、不留孤儿桶。
+        """
         if not self.embedding_engine or not getattr(self.embedding_engine, "enabled", False):
-            return
+            raise RuntimeError(
+                "embedding 未配置或未启用，拒绝写入：本系统要求向量化必须可用才能记录/修改记忆。"
+                "请在设置中配置 OMBRE_EMBED_API_KEY，或用「本地向量模型」面板装好 Ollama + bge-m3。"
+            )
+
+    async def _sync_embedding(self, bucket_id: str, content: str) -> None:
+        """create()/update(content=...) 调用，写入向量。
+
+        调用前必须已经过 _require_embedding_available() 校验。这里仍然
+        显式重复防御一次（未启用直接抛），失败时也不再降级吞掉——调用方
+        没有 embedding 就不该被允许把内容落盘。"""
+        if not self.embedding_engine or not getattr(self.embedding_engine, "enabled", False):
+            raise RuntimeError("embedding 未配置或未启用，拒绝写入。")
         if not content or not content.strip():
             return
-        try:
-            await self.embedding_engine.generate_and_store(bucket_id, content)
-        except Exception as e:
-            logger.warning(f"sync embedding failed for {bucket_id}: {e}")
+        await self.embedding_engine.generate_and_store(bucket_id, content)
 
     def _invalidate_bm25(self) -> None:
         """写操作后调用，标记 BM25 索引需要重建。search() 时懒触发。"""
@@ -311,6 +345,10 @@ class BucketManager:
           ``feel_202605011423_V085``）。如果与已有桶冲突，自动追加秒级后缀。
           为空 → 走默认 ``generate_bucket_id()``（12 位 hex）。
         """
+        # 写文件之前先校验 embedding 可用——fail-fast，不留「文件已存在但
+        # 向量缺失」的孤儿桶（rule.md §1.5 的「不静默」现在延伸为「不降级」）。
+        self._require_embedding_available()
+
         # F-04: 清洗 content / tags / name 中的危险控制字符和双向覆写符
         content = self._sanitize_text(content)
         if tags:
@@ -375,6 +413,8 @@ class BucketManager:
             metadata["pinned"] = True
         if protected:
             metadata["protected"] = True
+        if bucket_type == "permanent" or pinned:
+            metadata["type"] = "permanent"
 
         # --- iter 2.0: 来源工具与 grow 批次 ---
         # source_tool 留空 = 调用方未声明（兼容老逻辑），不写 frontmatter。
@@ -435,8 +475,6 @@ class BucketManager:
         # --- 按类型 + 主题域选择存储目录 ---
         if bucket_type == "permanent" or pinned:
             type_dir = self.permanent_dir
-            if pinned and bucket_type != "permanent":
-                metadata["type"] = "permanent"
         elif bucket_type == "feel":
             type_dir = self.feel_dir
         elif bucket_type == "plan":
@@ -477,12 +515,25 @@ class BucketManager:
         )
 
         # --- iter 2.1+: 索引/存储一致性 —— 桶落盘后立刻同步生成 embedding ---
-        # 之前依赖每个调用方自己记得调 generate_and_store，结果出现「文件存在但向量缺失」
-        # 的孤儿桶：search() 走向量预筛会把这种桶整体过滤掉，breath 检索就「数对不上」。
-        # 这里把同步内聚到 bucket_manager，调用方无需关心；失败仅 warning，桶照样存在
-        # （embedding 失败属于允许降级，rule.md §1.5）。
-        await self._sync_embedding(bucket_id, linked_content)
+        # _require_embedding_available() 已在函数开头校验过，这里走到的就该成功；
+        # 万一调用期间 embedding 真的失败（如网络抖动），不再静默 warning——
+        # 文件已经写盘，異常向上抛由调用方决定是否清理半成品文件。
+        try:
+            await self._sync_embedding(bucket_id, linked_content)
+        except Exception:
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+            raise
         self._invalidate_bm25()
+        self._record_v3_bucket_event(
+            "create",
+            bucket_id,
+            str(metadata.get("type") or bucket_type),
+            linked_content,
+            metadata,
+        )
 
         return bucket_id
 
@@ -541,6 +592,11 @@ class BucketManager:
         if not file_path:
             return False
 
+        # content 改动会触发 embedding 重新生成（见下方 _sync_embedding 调用），
+        # 同样要求 fail-fast：embedding 不可用就拒绝，不碰文件（不写入半新半旧状态）。
+        if "content" in kwargs:
+            self._require_embedding_available()
+
         try:
             post = frontmatter.load(file_path)
         except Exception as e:
@@ -549,6 +605,7 @@ class BucketManager:
 
         # --- Pinned/protected buckets: lock importance to 10, ignore importance changes ---
         # --- 钉选/保护桶：importance 不可修改，强制保持 10 ---
+        was_pinned = bool(post.get("pinned", False))
         is_pinned = post.get("pinned", False) or post.get("protected", False)
         if is_pinned:
             kwargs.pop("importance", None)  # silently ignore importance update
@@ -574,6 +631,7 @@ class BucketManager:
             post["pinned"] = bool(kwargs["pinned"])
             if kwargs["pinned"]:
                 post["importance"] = _PINNED_IMPORTANCE  # pinned → lock importance to 10
+                post.metadata.pop("anchor", None)  # pinned 与 anchor 互斥：钉为核心准则即清除坐标系标记
         if "digested" in kwargs:
             post["digested"] = bool(kwargs["digested"])
         if "model_valence" in kwargs:
@@ -657,16 +715,37 @@ class BucketManager:
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(frontmatter.dumps(post))
             self._move_bucket(file_path, self.permanent_dir, domain)
+        # --- Reverse: unpin → demote only buckets that were actually pinned.
+        # `type=permanent` is also a first-class bucket type, so an idempotent
+        # pinned=False update must not move explicit permanent memories.
+        elif (
+            "pinned" in kwargs
+            and not kwargs.get("pinned")
+            and was_pinned
+            and not post.get("protected")
+            and post.get("type") == "permanent"
+        ):
+            post["type"] = "dynamic"
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(frontmatter.dumps(post))
+            self._move_bucket(file_path, self.dynamic_dir, domain)
 
         logger.info(f"Updated bucket / 更新记忆桶: {bucket_id}")
 
         # --- iter 2.1+: content 改动 → 同步刷新 embedding ---
-        # 之前 update() 只写文件、不动向量，调用方各自记得调 generate_and_store。
-        # 漏一处就出现「向量是旧文本的，breath 检索拿到的桶语义对不上」的隐性 bug。
-        # 这里把刷新内聚进来，重复调用是幂等的（INSERT OR REPLACE），调用方多调一次也无害。
+        # 函数开头已校验过 embedding 可用；这里仍可能因调用瞬间网络/限流失败，
+        # 失败不再静默吞掉——异常向上抛，调用方（trace 等）据此向用户报错。
+        # 注意：文件内容此时已落盘，调用方需要知道这是「半失败」状态。
         if "content" in kwargs:
             await self._sync_embedding(bucket_id, post.content or "")
         self._invalidate_bm25()
+        self._record_v3_bucket_event(
+            "update",
+            bucket_id,
+            str(post.get("type") or "dynamic"),
+            post.content or "",
+            dict(post.metadata),
+        )
 
         return True
 
@@ -724,6 +803,13 @@ class BucketManager:
 
         self._invalidate_bm25()
         logger.info(f"Soft-deleted bucket (moved to archive) / 软删除记忆桶: {bucket_id}")
+        self._record_v3_bucket_event(
+            "delete",
+            bucket_id,
+            str(post.get("type") or "dynamic"),
+            post.content or "",
+            dict(post.metadata),
+        )
         return True
 
     # ---------------------------------------------------------
@@ -843,6 +929,8 @@ class BucketManager:
             return []
 
         limit = limit or self.max_results
+        # 字面召回：把查询原样（小写、去空白）留作子串匹配，保证显式搜的词必被召回
+        q_norm = query.strip().lower()
         all_buckets = await self.list_all(include_archive=False)
 
         if not all_buckets:
@@ -892,6 +980,17 @@ class BucketManager:
             meta = bucket.get("metadata", {})
 
             try:
+                # 字面命中：查询串原样出现在 name/tags/domain/正文 → 召回保障 + 排序加分
+                literal_hit = False
+                if q_norm:
+                    hay = " ".join([
+                        str(meta.get("name", "")),
+                        " ".join(str(t) for t in (meta.get("tags") or [])),
+                        " ".join(str(d) for d in (meta.get("domain") or [])),
+                        bucket.get("content", "") or "",
+                    ]).lower()
+                    literal_hit = q_norm in hay
+
                 # Dim 1: topic relevance (fuzzy text, 0~1)
                 topic_score = self._calc_topic_score(query, bucket)
 
@@ -934,10 +1033,16 @@ class BucketManager:
                 # Normalize to 0~100 for readability
                 normalized = (total / weight_sum) * 100 if weight_sum > 0 else 0
 
+                # 字面命中加分 + 召回保障：修复短查询（如 2 字"杭州"）即使正文里有也
+                # 因加权分被各维度稀释到 fuzzy_threshold 以下而整条搜不到。
+                # 用户显式搜的词必须召回，故 literal_hit 直接放行（OR），并给排序加分。
+                if literal_hit:
+                    normalized = min(100.0, normalized + _LITERAL_MATCH_BONUS)
+
                 # Threshold check uses raw (pre-penalty) score so resolved buckets
                 # 阈值用原始分数判定，确保 resolved 桶在关键词命中时仍可被搜出
                 # remain reachable by keyword (penalty applied only to ranking).
-                if normalized >= self.fuzzy_threshold:
+                if normalized >= self.fuzzy_threshold or literal_hit:
                     # Resolved buckets get ranking penalty (but still reachable by keyword)
                     # 已解决的桶仅在排序时降权
                     if meta.get("resolved", False):
@@ -955,94 +1060,23 @@ class BucketManager:
         return scored[:limit]
 
     # ---------------------------------------------------------
-    # Topic relevance sub-score:
-    # name(×3) + domain(×2.5) + tags(×2) + body(×1)
-    # 文本相关性子分：桶名(×3) + 主题域(×2.5) + 标签(×2) + 正文(×1)
+    # 四个评分维度的纯函数实现已拆到 bucket_scoring.py；这里保留同名
+    # wrapper 方法 —— 测试和历史调用方一直用 bucket_mgr._calc_xxx_score(...)
+    # 这种实例方法写法，wrapper 保持该接口不变，同时让实现本身可独立单测/复用。
     # ---------------------------------------------------------
     def _calc_topic_score(self, query: str, bucket: dict) -> float:
-        """
-        Calculate text dimension relevance score (0~1).
-        计算文本维度的相关性得分。
-        """
-        meta = bucket.get("metadata", {})
+        return calc_topic_score(query, bucket, content_weight=self.content_weight)
 
-        name_score = fuzz.partial_ratio(query, meta.get("name", "")) * _TOPIC_NAME_W
-        domain_score = (
-            max(
-                (fuzz.partial_ratio(query, d) for d in meta.get("domain", [])),
-                default=0,
-            )
-            * _TOPIC_DOMAIN_W
-        )
-        tag_score = (
-            max(
-                (fuzz.partial_ratio(query, tag) for tag in meta.get("tags", [])),
-                default=0,
-            )
-            * _TOPIC_TAG_W
-        )
-        content_score = fuzz.partial_ratio(query, bucket.get("content", "")[:_TOPIC_BODY_SLICE]) * self.content_weight
-
-        return (name_score + domain_score + tag_score + content_score) / (
-            100 * (_TOPIC_NAME_W + _TOPIC_DOMAIN_W + _TOPIC_TAG_W + self.content_weight)
-        )
-
-    # ---------------------------------------------------------
-    # Emotion resonance sub-score:
-    # Based on Russell circumplex Euclidean distance
-    # 情感共鸣子分：基于环形情感模型的欧氏距离
-    # No emotion in query → neutral 0.5 (doesn't affect ranking)
-    # ---------------------------------------------------------
     def _calc_emotion_score(
         self, q_valence: Optional[float], q_arousal: Optional[float], meta: dict
     ) -> float:
-        """
-        Calculate emotion resonance score (0~1, closer = higher).
-        计算情感共鸣度（0~1，越近越高）。
-        """
-        if q_valence is None or q_arousal is None:
-            return 0.5  # No emotion coordinates → neutral / 无情感坐标时给中性分
+        return calc_emotion_score(q_valence, q_arousal, meta)
 
-        try:
-            b_valence = float(meta.get("valence", _DEFAULT_VALENCE))
-            b_arousal = float(meta.get("arousal", _DEFAULT_AROUSAL))
-        except (ValueError, TypeError):
-            return 0.5
-
-        # Euclidean distance, max sqrt(2) ≈ 1.414
-        dist = math.sqrt((q_valence - b_valence) ** 2 + (q_arousal - b_arousal) ** 2)
-        return max(0.0, 1.0 - dist / _EMOTION_MAX_DIST)
-
-    # ---------------------------------------------------------
-    # Time proximity sub-score:
-    # More recent activation → higher score
-    # 时间亲近子分：距上次激活越近分越高
-    # ---------------------------------------------------------
     def _calc_time_score(self, meta: dict) -> float:
-        """
-        Calculate time proximity score (0~1, more recent = higher).
-        计算时间亲近度。
-        """
-        last_active_str = meta.get("last_active", meta.get("created", ""))
-        try:
-            last_active = datetime.fromisoformat(str(last_active_str))
-            days = max(0.0, (datetime.now() - last_active).total_seconds() / 86400)
-        except (ValueError, TypeError):
-            days = _TIME_FALLBACK_DAYS
-        return math.exp(-_TIME_DECAY_LAMBDA * days)
+        return calc_time_score(meta)
 
-    # ---------------------------------------------------------
-    # Touch frequency sub-score (iter 2.1)
-    # 触碰频率子分：被主动召回次数越多分越高
-    # ---------------------------------------------------------
     def _calc_touch_score(self, meta: dict) -> float:
-        """
-        Calculate touch frequency score (0~1).
-        Normalizes activation_count over 10; capped at 1.0.
-        计算触碰频率得分（0~1），以 10 次为上限归一化。
-        """
-        count = float(meta.get("activation_count") or 0)
-        return min(count / _TOUCH_NORMALIZE_CAP, 1.0)
+        return calc_touch_score(meta)
 
     # ---------------------------------------------------------
     # iter 2.0: anchor 系统（坐标系桶，硬上限 24）
@@ -1073,6 +1107,17 @@ class BucketManager:
             count = await self.count_anchors()
             return {"ok": True, "anchor": target, "count": count, "limit": self.ANCHOR_LIMIT, "noop": True}
         if target is True:
+            # pinned/protected 与 anchor 互斥：pinned=永远置顶浮现（核心准则），
+            # anchor=刻意不浮现（坐标系），两者语义直接矛盾。允许并存会让一个
+            # pinned+anchor 桶每会话都以「核心准则」冒头，诱导模型反复 release
+            # 却压不住它。这里直接拒绝，提示先 trace(pinned=0) 再改坐标系。
+            if bucket["metadata"].get("pinned") or bucket["metadata"].get("protected"):
+                return {
+                    "ok": False,
+                    "error": "这是 pinned 核心准则，不能同时设为 anchor（两者互斥）。要改成坐标系请先 trace(pinned=0)。",
+                    "count": await self.count_anchors(),
+                    "limit": self.ANCHOR_LIMIT,
+                }
             count = await self.count_anchors()
             if count >= self.ANCHOR_LIMIT:
                 return {
@@ -1238,6 +1283,13 @@ class BucketManager:
 
         self._invalidate_bm25()
         logger.info(f"Archived bucket / 归档记忆桶: {bucket_id} → archive/{primary_domain}/")
+        self._record_v3_bucket_event(
+            "archive",
+            bucket_id,
+            str(post.get("type") or "archived"),
+            post.content or "",
+            dict(post.metadata),
+        )
         return True
 
     # ---------------------------------------------------------
@@ -1329,6 +1381,19 @@ class BucketManager:
         except Exception:
             return default
 
+    @classmethod
+    def _normalize_metadata_value(cls, value):
+        """Return JSON-safe metadata values from YAML frontmatter reads."""
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {k: cls._normalize_metadata_value(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._normalize_metadata_value(v) for v in value]
+        return value
+
     def _load_bucket(self, file_path: str) -> Optional[dict]:
         """
         Parse a Markdown file and return structured bucket data.
@@ -1336,7 +1401,17 @@ class BucketManager:
         """
         try:
             post = frontmatter.load(file_path)
-            metadata = dict(post.metadata)
+            metadata = {
+                key: self._normalize_metadata_value(value)
+                for key, value in dict(post.metadata).items()
+            }
+            domain_value = metadata.get("domain")
+            if isinstance(domain_value, str):
+                metadata["domain"] = [domain_value] if domain_value.strip() else []
+            elif domain_value is None:
+                metadata["domain"] = []
+            elif not isinstance(domain_value, list):
+                metadata["domain"] = list(domain_value) if isinstance(domain_value, tuple) else [str(domain_value)]
             # 兼容老桶可能存储了 'V0.9'、'[我的视角:V0.3]' 等字符串格式
             for field, default in (("valence", 0.5), ("arousal", 0.3)):
                 if field in metadata:

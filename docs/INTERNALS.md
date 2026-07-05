@@ -38,10 +38,10 @@ Ombre Brain 是一套给 LLM 用的长期情绪记忆系统。它的边界是「
 
 记忆按桶类型分目录存放：`dynamic/`（普通，会衰减）、`permanent/`（钉选/固化，importance=10、不衰减）、`feel/`（模型自省，固定分 50，永不浮现到普通 breath）、`plans/active/`（待办，固定分 50，不衰减不浮现）、`letters/history/`（信件，原文永久保留，不参与压缩/合并/衰减）、`archive/`（已淘汰）。
 
-检索三通道并联：rapidfuzz 模糊匹配（关键词层）+ 余弦相似度（向量层）+ 衰减分排序（浮现层）。情感坐标用 Russell 环形模型的 `valence`/`arousal` 双连续维度，不用离散标签。
+检索多通道并联：rapidfuzz 模糊匹配 + BM25 稀疏检索（jieba 分词，`bm25_index.py`）共同承担关键词层召回 + 余弦相似度（向量层）+ 衰减分排序（浮现层）。情感坐标用 Russell 环形模型的 `valence`/`arousal` 双连续维度，不用离散标签。
 
-> **三通道职责澄清（refactor-2.0 后）**：
-> - **召回阶段**：rapidfuzz 关键词命中 + 元数据过滤（domain/tags/importance_min）共同决定候选池；
+> **多通道职责澄清（refactor-2.0 后）**：
+> - **召回阶段**：rapidfuzz 关键词命中 + BM25 稀疏召回 + 元数据过滤（domain/tags/importance_min）共同决定候选池；
 > - **打分阶段**：embedding 余弦相似度只作为**得分维度之一**乘进 `bucket_manager._score_bucket()`，不会单独触发召回；
 > - **排序阶段**：`decay_engine.calculate_score()` 给出最终衰减分，与上面两个分数加权汇总后排序。
 > 也就是说"并联"指的是「三种信号同时进入打分」，不是「三个独立的搜索引擎」。embedding 关闭时仅打分缺一维，召回不受影响。
@@ -76,39 +76,50 @@ Ombre-Brain/
 
 ```
                     ┌──────────────┐
-                    │  src/server.py │  MCP 入口（薄封装）+ Dashboard HTTP 路由 + 起服装配
+                    │  src/server.py │  MCP 入口（薄封装）+ 双连接器装配 + 起服编排（约 1022 行）
                     └─────┬───────┘
-                          │  注入 _runtime
-                          ▼
-                  ┌─────────────────────────────────────────────┐
-                  │ src/tools/ 业务包（一个工具一个子包，多分支拆文件） │
-                  │   breath/ · hold/ · grow/ · dream/                    │
-                  │   trace/ · anchor/ · plan/                              │
-                  │   _runtime.py · _common.py                              │
-                  └───────────┬───────────────────────────────┘
-           ┌───────────────┼───────────────┬────────────────────┐
+              注入 _runtime │  装配 web.register_all(mcp)
+           ┌──────────────┴──────────────────────────────┐
+           ▼                                              ▼
+  ┌─────────────────────────────┐      ┌───────────────────────────────┐
+  │ src/tools/ MCP 业务包（薄封装→子包）│      │ src/web/ HTTP/Dashboard 路由层      │
+  │   breath/ hold/ grow/ dream/         │      │   16 个域模块，每个 register(mcp)   │
+  │   trace/ anchor/ plan/ i/            │      │   config_api/embedding/buckets/... │
+  │   _runtime.py · _common.py           │      │   ollama_local/github/...           │
+  └───────────┬─────────────────────┘      │   共享依赖见 web/_shared.py          │
+              │                              └──────────────┬────────────────┘
+           ┌──┴────────────┬───────────────┬───────────────┴────┐
            ▼               ▼               ▼                    ▼
    bucket_manager   decay_engine    dehydrator         embedding_engine
    桶 CRUD+搜索     遗忘曲线         脱水/打标/合并    向量化+余弦检索
+   (+bm25_index)                                       (门面+单 API 后端)
            │               │               │                    │
            └───────┬───────┴───────────────┴────────────────────┘
                    ▼
               utils.py    (config / 日志 / ID / 路径安全 / token 估算)
 
-   import_memory.py  历史对话导入引擎，独立模块
+   独立模块：import_memory.py（历史导入）· migrate_engine/migration_engine.py
+   （记忆包导入 + 后端切换重算）· github_sync.py（云端备份）· errors.py（OB 错误码）
 ```
 
 ### 模块职责一览
 
 每个模块「干什么、边界在哪、依赖谁」：
 
-- **server.py**（约 3441 行）— MCP 服务入口。创建所有组件后调 `tools._runtime.init(...)` 注入依赖；以 `@mcp.tool()` 注册 11 个薄封装（每个 ≤ 10 行，只转发到 `tools/<名字>/`）；还负责所有 Dashboard HTTP 路由（`@mcp.custom_route`）、cookie/CSRF/限流/Webhook/SSE/heartbeat 这类走 HTTP 的事。不写业务逻辑。
-- **tools/**（拆分后的应用层）— 详见下面「1.x tools/ 包结构」。
+- **server.py**（约 1000 行）— MCP 服务入口。创建所有组件后调 `tools._runtime.init(...)` 注入依赖；以 `@mcp.tool()` / `@mcp_extra.tool()` 注册 **12 个薄封装**（每个 ≤ 10 行，只转发到 `tools/<名字>/`）；启动入口处把 `mcp_extra` 的 7 个工具回灌进 `mcp`，对外只暴露 **单连接器 `/mcp`**（12 工具全在这一条，详见 §3 抬头）；启动段调 `web.register_all(mcp)` 装配所有 HTTP 路由，并起 `mcp.streamable_http_app()` 一个 uvicorn 进程。**不写业务逻辑，也不再直接定义 HTTP 路由**——后者已全部迁到 `web/`。
+- **tools/**（MCP 工具应用层）— 详见下面「1.x tools/ 包结构」。
+- **web/**（HTTP/Dashboard 路由层）— 详见下面「1.y web/ 包结构」。从旧 server.py 巨石里拆出的 16 个域模块，每个导出 `register(mcp)`；cookie/CSRF/会话鉴权等共享依赖在 `web/_shared.py`（类比 `tools/_runtime.py`）。
 - **bucket_manager.py** — 桶 CRUD + 多维加权搜索 + `touch()` 激活刷新 + `_time_ripple()` 时间涟漪 + 文件搬运（archive/permanent 之间）。
 - **decay_engine.py** — `calculate_score(metadata)` 单桶活跃度评分；`run_decay_cycle()` 周期扫描 → auto-resolve / archive；后台 asyncio 循环。
 - **dehydrator.py** — 通过 OpenAI 兼容 LLM API 做四件事：`analyze()` 自动打标、`merge()` 内容融合、`digest()` 日记拆分、`dehydrate()` 摘要压缩；外加 `judge_plan_resolution()` 给 plan 自动结案做 LLM 双判。带 SQLite 缓存避免重复 API 调用。
-- **embedding_engine.py** — 三后端（gemini / bge-small-zh / bge-m3）向量化，SQLite 存储，余弦相似度搜索；本地后端用 sentence-transformers 懒加载。
+- **embedding_engine.py** — 「门面 + 后端」两层向量化：后端只有**一个 OpenAI 兼容 API 实现**（默认 Gemini 云端）；门面负责 SQLite 存取、余弦搜索、孤儿对账、模型/维度一致性校验（不一致记 OB-W005，不阻止启动）。**本地离线向量化**不是另一个后端，而是把 `base_url` 指向 OB 托管的 Ollama 边车（bge-m3，由 `web/ollama_local.py` 拉起子进程）。旧文档的「bge-small-zh / sentence-transformers 懒加载」已废弃。
+- **bm25_index.py** — BM25 稀疏检索（jieba 中文分词），给 `bucket_manager.search()` 提供 TF-IDF 加权的关键词召回（Dim 7）。`rank_bm25` / `jieba` 是软依赖，未装则静默 no-op，不影响其余维度；索引由 BucketManager 持有，写后脏标记、search 时懒重建。
 - **import_memory.py** — Claude JSON / ChatGPT / DeepSeek / Markdown / 纯文本五种格式的历史对话导入，分块处理 + 断点续传 + 词频规律检测。
+- **migrate_engine.py** — 完整记忆包导入：把 `/api/export` 产生的 zip（buckets/*.md + embeddings.db + export_meta.json）增量 merge 进当前系统；识别 ID 冲突（skip/overwrite/keep_both），embedding 模型不一致时只导 md 再重算。
+- **migration_engine.py** — embedding 后端切换（local ↔ api）时后台全量重算向量：先写 `embeddings.db.migrating`、跑完原子 swap；断点续传 + 失败跳过 + 进度文件供前端轮询。
+- **github_sync.py** — 把 `buckets_dir` 下的 .md 经 GitHub Git Trees API 批量提交做云端备份（不传 embeddings.db）；支持手动 + 定时自动同步。路由在 `web/github.py`。
+- **reclassify_api.py** — 一次性脚本：把历史落在「未分类/」的桶重新 `analyze()` 打标并搬到正确 domain 目录，只改 frontmatter 与文件位置。
+- **errors.py** — OB 统一错误码（如 OB-W005 embedding 模型漂移、OB-Startup 系列），供各模块抛结构化异常。
 
 > **第一人称豁免**：`import_memory.py` 在喂给 LLM 的 prompt 里把对话格式化成 `[用户] ... [AI] ...` 文本块（[src/import_memory.py](src/import_memory.py) `_chunk_turns` 第 291 行），这是给 LLM 看的「对话块」标签，不是写入桶 frontmatter 或返回给模型的 docstring，因此不违反 §2.9 第一人称原则。修改这段时勿误删。
 > **导入阈值**：`_PATTERN_MIN_DYNAMIC_BUCKETS = 5` / `_PATTERN_PIN_SUGGEST_THRESHOLD = 5`，详见 rule.md §6 备注。
@@ -118,7 +129,7 @@ Ombre-Brain/
 
 ### 1.x tools/ 包结构（2.0 拆分后）
 
-2.0 把 server.py 里原本「11 个肥大入口 + 一堆内部 helper」按路径拆到 `src/tools/<工具>/<分支>.py`，薄封装留在 server.py，真逻辑进子包。
+2.0 把 server.py 里原本「肥大入口 + 一堆内部 helper」按路径拆到 `src/tools/<工具>/<分支>.py`，薄封装留在 server.py，真逻辑进子包。
 
 ```
 src/tools/
@@ -132,10 +143,40 @@ src/tools/
 ├── dream/         # candidates/hints/output 三阶段 + __init__ 编排
 ├── trace/         # core（metadata/resolved/pinned/delete/content 替换/计划状态等全在这）
 ├── anchor/        # core：anchor_set / anchor_release / pulse
-└── plan/          # core：plan_create / letter_write / letter_read
+├── plan/          # core：plan_create / letter_write / letter_read
+└── i/             # core：自我认知条目读写（dispatch=i_core），iter 2.x 新增
 ```
 
-路线：`server.X(...)` → `tools.X.dispatch(...)`（`__init__.py`）→ 分支函数。所有分支只通过 `from .. import _runtime as rt` 读依赖，不能 `import server`。`server.py` 保留了 `_check_content_size / _check_pinned_quota / _max_bucket_bytes / _max_pinned / _merge_or_create / _check_duplicate_for / _check_plan_resolution` 这几个别名，让 Dashboard HTTP 路由原有调用点不需要改。
+路线：`server.X(...)` → `tools.X.dispatch(...)`（`__init__.py`）→ 分支函数。所有分支只通过 `from .. import _runtime as rt` 读依赖，不能 `import server`。`server.py` 保留了 `_check_content_size / _check_pinned_quota / _max_bucket_bytes / _max_pinned / _merge_or_create / _check_duplicate_for / _check_plan_resolution` 这几个别名，让仍引用它们的调用点不需要改。
+
+### 1.y web/ 包结构（HTTP 层从 server.py 拆出后）
+
+旧 server.py 把 93 个 `@mcp.custom_route` 全平铺在一个约 5000 行文件里。现在按域拆成 `src/web/<域>.py`，每个模块导出 `register(mcp)`，server.py 启动时 `web.register_all(mcp)` 统一装配（注册顺序见 `web/__init__.py`）。
+
+```
+src/web/
+├── _shared.py      # 共享依赖容器：config / logger / 各业务引擎 + cookie 会话鉴权 helper
+│                  #   （类比 tools/_runtime；embedding_engine 热替换时也写这里）
+├── auth.py         # /auth/*：密码登录 / 设置 / 改密 / 注销 / 会话
+├── oauth.py        # MCP Remote Auth（OAuth 2.0）相关 .well-known 与 token 端点
+├── dashboard.py    # 根路由 / 与 /dashboard 跳转、HTML 下发
+├── system.py       # /api/status / /health / 版本等系统信息
+├── meta.py         # 桶 frontmatter 元数据读写类端点
+├── search.py       # /api/search / /api/network / /api/breath-debug
+├── plans.py        # /api/plans(+/{id}/action) 看板
+├── letters.py      # /api/letters / /api/letter 信件
+├── hooks.py        # /breath-hook / /dream-hook（SessionStart 等 HTTP 钩子）+ Webhook
+├── buckets.py      # /api/buckets(+ pin/resolve/archive/forget/anchor/purge/edit/DELETE)
+├── import_api.py   # /api/import/*（上传 / 进度 / 暂停 / 规律 / 审阅）
+├── github.py       # /api/github/*（GitHub 备份同步，封装 github_sync.py）
+├── embedding.py    # /api/embedding/*（info / migrate / local 模型管理）
+├── ollama_local.py # 本地 Ollama 边车：装运行时 + 作为 OB 子进程常驻（裸机离线向量化）
+├── config_api.py   # /api/config / env-config / env-vars / 模型列表 / 连通性自检
+├── tunnel.py       # Cloudflare Tunnel 管理
+└── import_*/migrate 端点散落在 import_api/embedding 中（/api/migrate/* 由迁移引擎驱动）
+```
+
+(改动约束：新增 HTTP 路由就新建/扩展对应 `web/<域>.py` 并在 `register_all` 里加一行，不要再写回 server.py；所有 `/api/*` 路由首行调 `_shared` 的鉴权 helper。)
 
 ### 辅助脚本
 
@@ -218,7 +259,14 @@ feel 桶自身：
 
 ---
 
-## 3. MCP 工具规格（共 11 个）
+## 3. MCP 工具规格（共 12 个）
+
+> **单连接器（iter 2.2）**：claude.ai 的 5 工具上限已解除，12 个工具合并回一个连接器 `/mcp`。
+> 历史上（iter 2.1）曾因该上限拆成主 `mcp`（`/mcp`，5 个）+ 副 `mcp_extra`（`/mcp-extra`，7 个）两个 FastMCP 实例。
+> 现在 `mcp_extra` 仅作工具分组容器保留（7 个 `@mcp_extra.tool()` 注册不动），启动入口处统一把它的工具
+> 回灌进 `mcp`，三种 transport（stdio / sse / streamable-http）都只对外暴露一条 `/mcp`。
+> - 高频 5 个 —— `breath` / `hold` / `grow` / `trace` / `dream`
+> - 低频 7 个 —— `anchor` / `release` / `pulse` / `plan` / `letter_write` / `letter_read` / `I`
 
 ### 3.1 `breath` — 检索/浮现
 
@@ -273,9 +321,7 @@ feel 桶自身：
 
 签名：`pulse(include_archive=False)`
 
-返回：固化/动态/归档桶数、总 KB、衰减引擎状态、所有桶（带图标）的元数据摘要行。
-
-(已知局限：返回头部的统计行**不显示** `feel_count` / `plan_count` / `letter_count`，但底下的列表会列出这些桶——会让用户感到「数字对不上数量」。详见 §12 反逻辑点 1。)
+返回：固化/动态/归档桶数、feel/plan/letter 分项数量、总 KB、衰减引擎状态、所有桶（带图标）的元数据摘要行。
 
 ### 3.6 `dream` — 做梦自省
 
@@ -322,6 +368,16 @@ feel 桶自身：
 
 把指定桶的 `anchor` 字段从 `True` 改回未设置（`update(anchor=False)` 路径直接删除该 frontmatter 键，保持文件干净）。释放后该桶恢复正常浮现资格。无副作用，幂等。
 
+### 3.11 `I` — 自我认知条目（iter 2.x）
+
+签名：`I(content="", aspect="", read=False, limit=20)`
+
+实现在 `tools/i/`（`dispatch = i_core`）。语义：「我写下关于我自己的认识」——不是「时间里发生的事」，而是模型对自身本质/规律/变化的观察。
+
+- `content` 空 或 `read=True` → **读取模式**，返回已积累的全部自我认知（按 `limit` 截断，默认 20 条）。
+- `content` 非空 → **写入模式**，记一条自我认知；`aspect` 可选维度：`nature`(本质) / `values`(看重的) / `patterns`(规律) / `limits`(局限) / `becoming`(在变成什么) / `uncertainty`(不确定的) / `stance`(立场)。
+- I 条目写入时带 `dont_surface=True`：**不参与普通 `breath` / `dream`**；只在 `SessionStart` 时自动附带最近 3 条。
+
 ---
 
 ## 4. REST API 与 Dashboard
@@ -332,8 +388,8 @@ feel 桶自身：
 |---|---|---|---|
 | `/` | GET | 公开 | 重定向到 `/dashboard` |
 | `/health` | GET | 公开 | 健康检查（桶数 + 衰减引擎状态） |
-| `/breath-hook` | GET | 公开 | SessionStart 钩子（HTTP 模式才生效） |
-| `/dream-hook` | GET | 公开 | Dream 钩子 |
+| `/breath-hook` | GET | 🔒 cookie/token | SessionStart 钩子（HTTP 模式才生效）；默认需 Dashboard 登录态或 hook token |
+| `/dream-hook` | GET | 🔒 cookie/token | Dream 钩子；默认需 Dashboard 登录态或 hook token |
 | `/dashboard` | GET | 公开（页面），AJAX 走 cookie | Dashboard HTML |
 | `/letters` | GET | 公开 | 301 → `/#letters`（已合并进 dashboard 的「信」分页，老书签兼容） |
 | `/auth/status` | GET | 公开 | 是否已登录 / 是否需要初始化密码 |
@@ -351,7 +407,7 @@ feel 桶自身：
 | `/api/settings/sampling` | GET / POST | 🔒 | iter 1.9：dashboard 的加权采样面板。GET 返回当前 `surfacing.sampling.{enabled,top_k,sample_k,temperature}`；POST 校验范围后热更新到内存 config（不写回 yaml） |
 | `/api/anchors` | GET | 🔒 | iter 2.0：列出所有 anchor 桶（按 `created` 升序），返回 `{ok, count, limit, anchors:[...]}` |
 | `/api/bucket/{id}/anchor` | POST | 🔒 | iter 2.0：toggle anchor 标记。Body 可传 `{value: bool}` 强制设置；不传则切换。已满 24 时返回 **409** + `{error, count, limit}` |
-| `/api/bucket/{id}` | DELETE | 🔒 | 硬删除，需 `?confirm=true` |
+| `/api/bucket/{id}` | DELETE | 🔒 | 删除到档案：移入 `archive/` 并写 `deleted_at`，需 `?confirm=true`；物理删除只走 `/api/buckets/purge` |
 | `/api/letters` | GET | 🔒 | 信件列表，支持 `?author=user\|claude` |
 | `/api/letter` | POST | 🔒 | Dashboard 写信入口 |
 | `/api/search?q=` | GET | 🔒 | 搜索 |
@@ -396,12 +452,11 @@ feel 桶自身：
 | `/api/env-vars` | GET | 🔒 | dashboard 设置页「⑤ 环境变量」只读区：当前进程读到的所有 `OMBRE_*`，敏感字段脱敏 |
 | `/api/env-config` | GET | 🔒 | 可写 6 字段的当前值（脱敏） |
 | `/api/env-config` | POST | 🔒 | 热更新 6 字段并写回 `.env`（重启仍有效） |
-| `/mcp/*` | — | 公开 | FastMCP 主连接器（iter 2.1）：breath / hold / grow / dream / trace |
-| `/mcp-extra/*` | — | 公开 | FastMCP 副连接器（iter 2.1）：anchor / release / pulse / plan / letter_write / letter_read |
+| `/mcp/*` | — | 公开 | FastMCP 单连接器（iter 2.2）：全部 12 个工具 —— breath / hold / grow / dream / trace / anchor / release / pulse / plan / letter_write / letter_read / **I** |
 
 🔒 = 需要 cookie 认证，未认证返回 `JSON {error, setup_needed}` 状态码 401。
 
-(实现注意：所有 `/api/*` 路由在函数体首行调用 `_require_auth(request)`；新增端点必须沿用此模式。`/mcp` 不受保护——MCP 协议自身没有认证层，靠传输层（cloudflared、ngrok）做边界。)
+(实现注意：所有 `/api/*` 路由在函数体首行调用 `web/_shared.py` 的会话鉴权 helper；这些路由已全部从 server.py 迁到 `web/<域>.py`，新增端点在对应模块里沿用此模式。`/mcp` 走另一套保护：`config.yaml: mcp_require_auth`（默认 true）开启时由纯 ASGI 中间件校验 MCP Bearer token；设为 false 则开放直连。MCP 协议自身无 cookie 认证层，靠传输层（cloudflared、ngrok）+ Bearer 做边界。另：`_MCPAcceptShim` 中间件会给 `/mcp*` 探测请求补齐 `Accept: application/json, text/event-stream`，修复某些客户端首个探测 POST 的 406。)
 
 ### 4.2 Dashboard 认证
 
@@ -555,7 +610,7 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 
 1. domain 预筛（domain_filter 命中的桶；空集合时回退全量）
 2. embedding 评分（如果 `embedding_engine.enabled`，取 top 50 向量近邻；分数注入 Layer 2 的 `semantic` 维度）—— **不再窄化候选集**
-3. 多维加权精排（topic / emotion / time / importance / touch [+ semantic]）
+3. 多维加权精排（topic / emotion / time / importance / touch [+ semantic] [+ bm25]）—— BM25 稀疏召回作为 Dim 7（`bm25_index.py`，软依赖未装则该维度 0 分）
 4. 截断到 `limit`
 
 (改动注意：iter 2.1+ 起 embedding 不再用作候选预筛。历史实现把候选集替换成「在 embeddings.db 里的桶」，导致缺失向量的桶在 breath 检索里整体消失，pulse 总数与 breath 命中数对不上。修复后没向量的桶 `semantic_score=0`，仍可凭 topic/emotion/time/importance 命中。索引一致性由 `bucket_manager.create()/update(content=...)` 自动 `_sync_embedding()` 维持；pulse 也会附带「索引漂移」告警。)
@@ -597,8 +652,8 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 | `dehydration.max_tokens` | `1024` | 单次生成上限 |
 | `dehydration.temperature` | `0.1` | 采样温度 |
 | `embedding.enabled` | `true` | 启用向量检索 |
-| `embedding.backend` | `gemini` | `gemini` / `bge-small-zh` / `bge-m3` |
-| `embedding.model` | `gemini-embedding-001` | （仅 gemini 后端使用） |
+| `embedding.backend` | `api` | 只支持 `api`（OpenAI 兼容端点）；本地离线向量化不是另一个后端，而是把 `base_url` 指向 OB 托管的 Ollama 边车 |
+| `embedding.model` | `gemini-embedding-001` | 云端模型名；本地则填 Ollama 模型名（如 `bge-m3`） |
 | `embedding.base_url` | （继承 dehydration） | 可独立配置 |
 | `embedding.api_key` | （继承 dehydration） | 可独立配置 |
 | `decay.lambda` | `0.05` | 衰减速率 λ |
@@ -613,6 +668,8 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 | `scoring_weights.time_proximity` | `1.5` | time 权重（B-06 修复值） |
 | `scoring_weights.importance` | `1.0` | importance 权重 |
 | `scoring_weights.content_weight` | `1.0` | 正文权重（B-07 修复值） |
+| `hooks.token` | `""` | `/breath-hook`、`/dream-hook` 的共享 token；也可用 `OMBRE_HOOK_TOKEN` |
+| `hooks.allow_public` | `false` | 是否允许 hook 无鉴权访问；也可用 `OMBRE_HOOK_ALLOW_PUBLIC=true`，仅建议在外层已有鉴权时开启 |
 | `limits.max_bucket_bytes` | `51200` (50KB) | 单桶内容字节上限（iter 1.6 §5）；0 禁用 |
 | `limits.max_pinned` | `20` | pinned 桶数量上限（iter 1.6 §5）；permanent 桶同计；0 禁用 |
 | `bucket_type_defaults.{type}.{field}` | （空） | iter 1.9：按桶类型覆盖 importance/valence/arousal 默认值。例：`bucket_type_defaults.feel.importance: 5`。`bucket_manager.create()` 在不传入该字段时查此表 |
@@ -623,7 +680,7 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 | `surfacing.sampling.top_k` | `5` | 候选池大小（按衰减分取前 k） |
 | `surfacing.sampling.sample_k` | `2` | 从池里无放回抽 k 条返回 |
 | `surfacing.sampling.temperature` | `0.7` | 权重 = score^(1/temperature)；>1 更均匀，<1 更偏向高分桶 |
-| `wikilink.*` | （已废弃） | wikilink 自动注入已禁用，由 LLM prompt 直接生成 `[[]]` |
+| `wikilink.*` | （已废弃） | wikilink 自动注入已禁用，由 LLM prompt 直接生成 `[[]]`；`config.example.yaml` 不再给出可配置项 |
 
 ### 7.2 环境变量
 
@@ -635,7 +692,7 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 | `OMBRE_EMBED_API_KEY` | — | 向量化（embedding）的 API Key；不设则语义检索不可用，桶仍可写入 |
 | `OMBRE_EMBED_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai/` | 覆盖 `embedding.base_url` |
 | `OMBRE_EMBED_MODEL` | `gemini-embedding-001` | 覆盖 `embedding.model` |
-| `OMBRE_EMBED_BACKEND` | `gemini` | 向量后端：`gemini` / `bge-small-zh`（本地 100MB）/ `bge-m3`（本地 2.2GB）；本地模式无需 EMBED_API_KEY |
+| `OMBRE_EMBED_BACKEND` | （已废弃） | 旧的本地后端选择（bge-small-zh/bge-m3 sentence-transformers）已移除；现在统一走 `api` 后端，本地离线靠 `OMBRE_EMBED_BASE_URL` 指向 Ollama 边车 + 填本地模型名 |
 | `OMBRE_TRANSPORT` | `stdio` | 覆盖 `transport` |
 | `OMBRE_PORT` | `8000` | HTTP/SSE 监听端口 |
 | `OMBRE_BUCKETS_DIR` | `./buckets` | 覆盖 `buckets_dir`（Docker volume 必设） |
@@ -763,34 +820,36 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 ## 11. Debug 快速索引（症状 → 文件 + 函数）
 
 > 出现这些症状先去这里查。每条按「**用户/Claude 看到什么** → 去看哪个函数」组织。
+>
+> **注意（重构后路径变化）**：breath/hold/grow/dream/trace 的工具逻辑已从 server.py 迁到 `src/tools/<工具>/`；所有 `/api/*` 与 `/auth/*` HTTP 路由已迁到 `src/web/<域>.py`。下表「文件」列已按现状更新；server.py 只剩薄封装 + 起服编排（CORS/中间件/keepalive/_fire_webhook）。
 
 ### 11.1 浮现 / 检索类
 
 | 症状 | 文件 | 函数 |
 |---|---|---|
-| `breath()` 无参返回「权重池平静」但桶其实存在 | `server.py` | `breath` 浮现分支；检查 `bucket_mgr.list_all()` 是否漏遍历某子目录 |
-| 应该浮现的钉选桶没出现 | `server.py` | `breath` 浮现分支的 pinned 过滤；`bucket_mgr.create` 是否写入 `pinned: True` |
+| `breath()` 无参返回「权重池平静」但桶其实存在 | `tools/breath/` | 浮现分支；检查 `bucket_mgr.list_all()` 是否漏遍历某子目录 |
+| 应该浮现的钉选桶没出现 | `tools/breath/` | 浮现分支的 pinned 过滤；`bucket_mgr.create` 是否写入 `pinned: True` |
 | 钉选桶 importance 不是 10 | `bucket_manager.py` | `create()`（pinned 锁 10）+ `update()`（pinned 重新锁 10） |
 | 检索结果排序看着不对 | `bucket_manager.py` | `search()` Layer 2 + `_calc_topic_score / _calc_emotion_score / _calc_time_score` |
 | 关键词明明在桶名里却没命中 | `bucket_manager.py` | `_calc_topic_score`（rapidfuzz partial_ratio 阈值）+ `fuzzy_threshold` 配置 |
 | resolved 桶完全搜不到 | `bucket_manager.py` | `search()` 阈值检查应该用 normalized 原始值，× 0.3 只在通过阈值后；旧版 B-01 行为 |
 | 向量搜索没生效 | `embedding_engine.py` | `enabled` 是否为 True；`search_similar` 是否抛异常被 server.py 捕获 |
-| 向量后端切换不生效 | `server.py` | `/api/config` POST 中 embedding.backend 分支必须 `EmbeddingEngine(config)` 完整重建 |
+| 向量后端切换不生效 | `web/config_api.py` | `/api/config` POST 中 embedding.backend 分支必须 `EmbeddingEngine(config)` 完整重建 |
 | `breath(domain="feel")` 返回空但有 feel 桶 | `bucket_manager.py` | `list_all()` `dirs` 列表必须含 `self.feel_dir` |
-| Top-1 永远是同一个桶 | `server.py` | `breath` 浮现分支 `top1` 固定逻辑；想加多样性需改成 sampling |
+| Top-1 永远是同一个桶 | `tools/breath/` | 浮现分支 `top1` 固定逻辑；想加多样性需改成 sampling |
 
 ### 11.2 存储 / 合并类
 
 | 症状 | 文件 | 函数 |
 |---|---|---|
-| `hold` 应合并却新建了 | `server.py` | `_merge_or_create`；检查 `merge_threshold` + `bucket_mgr.search(content, limit=1)` 返回的 score |
+| `hold` 应合并却新建了 | `tools/hold/` + `tools/_common.py` | `merge_or_create`；检查 `merge_threshold` + `bucket_mgr.search(content, limit=1)` 返回的 score |
 | `hold` 应新建却合并到无关桶 | `bucket_manager.py` | `_calc_topic_score` content_weight 是否被改回 3.0；query 用了 content 全文导致正文相似度爆表 |
-| 用户传入 valence=0.0 被忽略 | `server.py` | `hold` 中必须用 `0 <= valence <= 1` 判定，不能 `if valence`（B-09） |
-| `grow` 短内容报「digest 失败」 | `server.py` | 短内容 `< 30` 字应走快速路径；检查长度判断 |
+| 用户传入 valence=0.0 被忽略 | `tools/hold/` | 必须用 `0 <= valence <= 1` 判定，不能 `if valence`（B-09） |
+| `grow` 短内容报「digest 失败」 | `tools/grow/` | 短内容 `< 30` 字应走 `shortpath` 快速路径；检查长度判断 |
 | 桶名乱码 / 文件名错误 | `utils.py` | `sanitize_name`；检查正则 `[^\w\s\u4e00-\u9fff-]` |
 | feel 桶 domain 莫名变成「未分类」 | `bucket_manager.py` | `create()` 必须对 `bucket_type=="feel"` 单独处理（B-10） |
-| `hold(feel=True)` 没自动打 `__feel__` | `server.py` | `hold` feel 分支 `feel_tags = ["__feel__"] + extra_tags` |
-| source_bucket 没被标 digested | `server.py` | `hold` feel 分支末尾 `bucket_mgr.update(source_bucket, digested=True, model_valence=...)` |
+| `hold(feel=True)` 没自动打 `__feel__` | `tools/hold/` | feel 分支 `feel_tags = ["__feel__"] + extra_tags` |
+| source_bucket 没被标 digested | `tools/hold/` | feel 分支末尾 `bucket_mgr.update(source_bucket, digested=True, model_valence=...)` |
 
 ### 11.3 衰减 / 归档类
 
@@ -806,14 +865,14 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 
 | 症状 | 文件 | 函数 |
 |---|---|---|
-| Dashboard 401 | `server.py` | `_require_auth`；检查 cookie `ombre_session`；`OMBRE_DASHBOARD_PASSWORD` 是否正确 |
-| 改密码报「环境变量密码」错误 | `server.py` | `auth_change_password` 检测 `OMBRE_DASHBOARD_PASSWORD` 设置时禁用 |
-| HTTP 模式下 Claude.ai 连不上 | `server.py` | `__main__` CORS 中间件；`_app = mcp.streamable_http_app()` + `mcp_extra` 合并；URL 末尾必须 `/mcp`（主）或 `/mcp-extra`（副） |
+| Dashboard 401 | `web/_shared.py` + `web/auth.py` | 会话鉴权 helper；检查 cookie `ombre_session`；`OMBRE_DASHBOARD_PASSWORD` 是否正确 |
+| 改密码报「环境变量密码」错误 | `web/auth.py` | `auth_change_password` 检测 `OMBRE_DASHBOARD_PASSWORD` 设置时禁用 |
+| HTTP 模式下 Claude.ai 连不上 | `server.py` | `__main__` CORS 中间件；`_app = mcp.streamable_http_app()`（单连接器，工具已回灌进 `mcp`）；URL 末尾必须 `/mcp` |
 | docker compose 重启后桶丢失 | — | volume 必须挂载到 `OMBRE_BUCKETS_DIR`（默认 `/data` 或 `/app/buckets`） |
-| Dashboard 改 host vault 不生效 | `server.py` | `_write_env_var`；写入 `.env` 后必须 `docker compose down/up` 重新挂载 |
+| Dashboard 改 host vault 不生效 | `web/config_api.py` | `_write_env_var`；写入 `.env` 后必须 `docker compose down/up` 重新挂载 |
 | keepalive 失败 | `server.py` | `_keepalive_loop`；检查 `OMBRE_PORT` 实际监听端口 |
 | Webhook 不推送 | `server.py` | `_fire_webhook`；检查 `OMBRE_HOOK_URL` 和 `OMBRE_HOOK_SKIP` |
-| 配置热更新 dehydrator 没生效 | `server.py` | `api_config_update` 中 dehydrator 字段直接赋值 + 重建 `AsyncOpenAI` 客户端 |
+| 配置热更新 dehydrator 没生效 | `web/config_api.py` | `api_config_update` 中 dehydrator 字段直接赋值 + 重建 `AsyncOpenAI` 客户端 |
 
 ### 11.5 import / 历史导入类
 
@@ -827,25 +886,25 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 
 ## 12. 已知用户向反逻辑点
 
-> 这些点不是 bug，但用户/Claude 用起来会困惑。修复需要权衡，先记录。
+> 这些点是用户/Claude 用起来容易困惑的地方；已闭合的项保留为设计说明，未闭合项继续跟踪。
 
-1. **`pulse` 顶部统计行不显示 plan/letter/feel 数**。底下列表会列出这些桶，导致「数字对不上数量」。改动点：`server.py:pulse` 拼字符串处增加 `feel_count / plan_count / letter_count` 字段（`bucket_mgr.get_stats()` 已经返回，缺的只是显示）。
+1. **`pulse` 顶部统计行已显示 plan/letter/feel 数**。现在头部直接列出 `feel 桶` / `plan 桶` / `letter 桶`，不再出现「底下有桶但顶部数字对不上」。
 
 2. **README 与代码降级行为已对齐**（iter 2.0 doc-fix 闭合）。README 第三步与「常见问题」均改口为「无 key 时 hold/grow 仍能保存桶（自动兜底为「未分类」域，无打标、无向量），但 breath 浮现/检索阶段一旦触发脱水就会报错」。原冲突源自旧版 README 措辞「没有 API key 也能跑，只是脱水压缩功能不可用」与代码 `dehydrator.dehydrate()` 在 `api_available=False` 时直接 `RuntimeError` 的实情不符；现以代码实情为准。
 
 3. **`breath(domain="feel")` 文档说支持，但很多用户没意识到 `tags="feel"` 等价**。两条路径在 server.py:`breath` 顶部统一映射，已加在工具 docstring 里，但 dashboard 没暴露 feel 通道入口。
 
-4. **`grow` 短内容 < 30 字被静默走 hold 路径**，没有任何提示。用户传一句日记发现没被拆分会困惑。修复方向：返回串前加「（短内容，已直接保存为单桶）」标注。
+4. **`grow` 短内容 < 30 字走 hold 路径时已明确提示**。返回串会先说明「短内容已按 hold 路径保存为单条记忆，没有拆分」。
 
 5. **dream feel 历史折叠已实现**。iter 2.0 后 dream 末尾的 feel 历史段按 `surfacing.feel_max_tokens`（默认 6000）做 token 预算，超出的老 feel 折叠为 60 字符单行摘要。原记录「dream 全量返回 feel 历史不限数量」问题已闭合。
 
-6. **`OMBRE_HOST_VAULT_DIR` 写入 .env 后无任何「需要重启」提示**。Dashboard 仅在 POST 响应里写了 note，但用户如果只看 UI 状态可能不会看到那段 JSON。修复方向：UI 上加 toast 提示。
+6. **`OMBRE_HOST_VAULT_DIR` 写入 .env 后已提示需要重启**。POST 返回 `restart_required/message`，Dashboard 保存成功后直接显示这句提示。
 
-7. **wikilink 配置项已废弃但仍在 `config.example.yaml`**。新用户会以为配 `wikilink.auto_top_k` 等参数有用，实际全被忽略。修复方向：从 example 删除整个 `wikilink:` 段，或注释掉并标 deprecated。
+7. **wikilink 配置项已废弃并从 `config.example.yaml` 移除 active stanza**。example 只保留 deprecated 说明，旧配置残留仍会被忽略。
 
-8. **`trace(resolved=1)` 与 `/api/bucket/{id}/resolve` 行为一致但提示不同**。CLI 端有「→ 已沉底，只在关键词触发时重新浮现」人话说明，REST 端只返回 `{ok: true}`。Dashboard 应自行渲染同样的提示。
+8. **`trace(resolved=1)` 与 `/api/bucket/{id}/resolve` 提示已统一**。两边共用 `resolved_hint()`，REST 返回 `message`，Dashboard 直接展示。
 
-9. **`/api/bucket/{id}` DELETE 需要 `?confirm=true`，但 archive POST 不需要**。同样是「移除一个桶」，DELETE 是硬删（不可逆）archive 是软删（可在文件系统手动恢复），semantics 没问题但用户容易混淆。Dashboard UI 应明确区分两个按钮。
+9. **Dashboard 已区分「归档」「删除到档案」「永久删除」**。单桶 DELETE 是移入 `archive/` 并写 `deleted_at`；真正物理删除只在清理模式的 `/api/buckets/purge` 中出现。
 
 10. **冷启动检测最多 2 个**。`importance >= 8` 的新桶超过 2 个时，第 3 个开始按普通衰减分排队，可能被压在 top-20 后随机洗牌。如果用户一次性钉选 5 条核心准则后又新建 3 个 importance=10 的事件桶，会感到「我刚建的核心事件没浮现」。
 
